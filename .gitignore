@@ -1,0 +1,36 @@
+# =========================
+# Node.js & VS Code Frontend
+# =========================
+# 忽略龐大的 npm 依賴套件庫
+node_modules/
+
+# 忽略 TypeScript/esbuild 編譯後的 JavaScript 產物
+out/
+dist/
+
+# 忽略 VS Code 擴充功能測試與打包產物
+.vscode-test/
+*.vsix
+
+# =========================
+# Rust Core Engine (Backend)
+# =========================
+# 忽略 Cargo 編譯生成的二進位檔與中介產物 (等同於 C++ 的 build/ 目錄)
+core_engine/target/
+
+# 忽略 Rust 備份檔
+**/*.rs.bk
+
+# =========================
+# Project Specific (Git Guard)
+# =========================
+# 根據你的專案設計，系統會以追加的方式，將溯源記錄即時存儲於專案根目錄下的本地隱藏日誌文件中 [cite: 50]。
+# 我們在開發自己這個外掛時，也應該忽略測試產生的本地日誌。
+.git_guard/
+
+# =========================
+# OS & Editor
+# =========================
+.DS_Store
+Thumbs.db
+.idea/
