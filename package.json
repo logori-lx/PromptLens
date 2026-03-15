@@ -9,13 +9,28 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:*"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "promptlens.helloWorld",
-        "title": "Hello World"
+        "command": "promptlens.insertPromptMark",
+        "title": "PromptLens: Insert Prompt Mark"
+      },
+      {
+        "command": "promptlens.cancelGeneration",
+        "title": "PromptLens: Cancel Generation"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "promptlens.insertPromptMark",
+        "key": "ctrl+shift+i",
+        "mac": "cmd+shift+i",
+        "when": "editorTextFocus"
       }
     ]
   },
