@@ -1,6 +1,13 @@
 [package]
-name = "core_engine"
+name = "prompt_core"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 🌟 统一将 tree-sitter 生态升级到 0.23 稳定版
+tree-sitter = "0.26.7"
+tree-sitter-cpp = "0.23"
+tree-sitter-rust = "0.24.0"
