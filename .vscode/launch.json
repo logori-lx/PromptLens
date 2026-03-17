@@ -12,6 +12,10 @@
 			"args": [
 				"--extensionDevelopmentPath=${workspaceFolder}"
 			],
+			// for test, if the env is set, then will print debug log in debug console
+			"env": {
+                "NODE_ENV": "development"
+            },
 			"outFiles": [
 				"${workspaceFolder}/dist/**/*.js"
 			],

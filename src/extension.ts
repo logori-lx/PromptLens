@@ -1,7 +1,10 @@
 import * as vscode from 'vscode';
 
+// for test, if env development is set, redudant debug log will be printed
+const isDev = process.env.NODE_ENV === 'development';
 const TRIGGER_MARK = '//>';
 const DEBOUNCE_DELAY = 800; // 0.8秒防抖
+
 const loadingDecorationType = vscode.window.createTextEditorDecorationType({
     after: {
         contentText: ' ⏳ 正在呼叫 AI 引擎生成代碼...',
@@ -58,6 +61,24 @@ export function activate(context: vscode.ExtensionContext) {
                 if (promptText.length > 0) {
                     const editor = vscode.window.activeTextEditor;
                     if (!editor) return [];
+                    // print the code that frontend get.
+                    if(isDev){
+                        const fullCode = document.getText(); // 获取当前文件的所有代码
+                        
+                        const inputPayload = {
+                            user_prompt: promptText,
+                            file_content: fullCode
+                        };
+                        // 将对象转为格式化的 JSON 字符串（缩进2个空格，方便阅读）
+                        const jsonString = JSON.stringify(inputPayload, null, 2);
+                        
+                        // 打印到调试控制台
+                        console.log("📦 准备传给 Rust 的 JSON 数据如下:\n", jsonString);
+                    }
+                   
+                    // ==========================================
+                    // 🌟 新增 (修改部分结束)
+                    // ==========================================
 
                     try {
                         // ==========================================
@@ -79,8 +100,12 @@ export function activate(context: vscode.ExtensionContext) {
                             title: `🤖 PromptLens: 正在生成代码...`,
                         }, async (progress) => {
                             
-                            // 调用你写好的 callAI 函数
-                            const aiResponse = await callAI(promptText, token);
+                            let aiResponse: string;
+                            if (isDev){
+                                aiResponse = await callMockAI(promptText, token);
+                            }else{
+                                aiResponse = await callAI(promptText, token);
+                            }
 
                             // ==========================================
                             // 🧹 4. AI 响应回来后，立刻清除游标处的 Loading 装饰
@@ -126,9 +151,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(insertMarkCmd, inlineProvider);
 }
-
-// 🤖 AI 调用函数 (保留你原来的逻辑，仅做精简)
-async function callAI(prompt: string, token: vscode.CancellationToken): Promise<string> {
+// For test, mock ai behaviour.
+async function callMockAI(prompt: string, token: vscode.CancellationToken): Promise<string> {
     console.log(`🔧 调用 AI，提示: "${prompt}"`);
     
     // 模拟网络延迟（1.5秒）
@@ -156,6 +180,14 @@ async function callAI(prompt: string, token: vscode.CancellationToken): Promise<
     } else {
         aiResponse = `\n// AI 根据 "${prompt}" 生成的代码\nconst result = "AI 生成的代码块";\nconsole.log(result);`;
     }
+    
+    return aiResponse;
+}
+
+//TBD， enter the prompt & AST tree text and get the aioutput.
+async function callAI(prompt: string, token: vscode.CancellationToken): Promise<string> {
+    
+    let aiResponse = '';
     
     return aiResponse;
 }
