@@ -7,9 +7,9 @@ use language_support::language::LanguageID;
 use language_support::language::KnownLanguage;
 const IS_DEBUG_MODE: bool = true;
 const DEBUG_JSON_PATH: &str = "test_input.json";
+const ACTIVE_NODE_THRESHOLD: usize =  150;
 
-// 1. 定義從 Node.js (或本地測試文件) 接收的輸入結構
-// 1. 定義從 Node.js 接收的輸入結構
+// The structure of data received from Node.js
 #[derive(Deserialize, Debug)]
 struct InputPayload {
     user_prompt: String,
@@ -17,7 +17,7 @@ struct InputPayload {
     language_id: LanguageID, 
 }
 
-// 2. 定義發還給前端的輸出結構
+// The structure of data output to Node.js
 #[derive(Serialize, Debug)]
 struct OutputPayload {
     user_prompt: String,
@@ -25,56 +25,60 @@ struct OutputPayload {
     error: Option<String>,
 }
 
-// 3. 核心邏輯：遞歸遍歷 AST，提取函數骨架與錯誤（半成品）片段
+// Recursively traverse the AST, extract the skeletons or error fragments of function.
+// TODO: consider if the extract_functions need to be exposed to public as input variable signatures is useless for user.
 fn extract_functions(node: Node, code_bytes: &[u8], trigger_idx: Option<usize>, signatures: &mut Vec<String>) {
     let kind = node.kind();
     let start_byte = node.start_byte();
     let end_byte = node.end_byte();
-
-    // 🌟 核心增强：计算当前节点是否离用户的 Prompt 非常近
+    // Determine if the node is close to the prompt.
+    // If so, set this node as an active node. 
+    // An active node will be stored entirely without any simplification.
     let is_active_node = if let Some(idx) = trigger_idx {
-        // 情况1：prompt 就在这个函数内部 (idx 在 start 和 end 之间)
-        // 情况2：prompt 在函数上方紧挨着（函数 start 距离 prompt 不超过 150 个字节）
-        (idx >= start_byte && idx <= end_byte) || (start_byte > idx && start_byte - idx < 150)
+        
+        (idx >= start_byte && idx <= end_byte) // if the prompt is located in the function(start < idx < end)
+        || (start_byte > idx && start_byte - idx < ACTIVE_NODE_THRESHOLD) // if the prompt is located outside but close to the function
     } else {
         false
     };
-
+    // If the node can't be analyzed, then add a tag and store the whole function 
     if node.is_error() {
         if let Ok(snippet) = std::str::from_utf8(&code_bytes[start_byte..end_byte]) {
             let clean_snippet = snippet.trim();
             if clean_snippet.len() > 3 {
-                signatures.push(format!("// [当前正在编写或存在语法的代码块]\n{}", clean_snippet));
+                signatures.push(format!("// [Editing block or code block with grammar error]\n{}", clean_snippet));
             }
         }
     } 
-    else if kind == "function_definition"    // C/C++ 等的函数
-        || kind == "function_item"      // Rust 的函数
-        || kind == "method_definition"  // 类的方法
-        || kind == "class_specifier"    // C++ 的类
+    else if kind == "function_definition"    // function in C/C++
+        || kind == "function_item"      // function in Rust
+        || kind == "method_definition"  // function definition
+        || kind == "class_specifier"    // class in C++
     {
         if let Ok(snippet) = std::str::from_utf8(&code_bytes[start_byte..end_byte]) {
             if is_active_node {
-                // [当前正在编辑的完整代码块] 逻辑不变
-                signatures.push(format!("// [当前正在编辑的完整代码块]\n{}", snippet.trim()));
+                // Addd a tag and store to mark this code is editing and store the whole function. 
+                signatures.push(format!("// [Editing block]\n{}", snippet.trim()));
                 return;
             } else {
-                // 🌟 【增强的清理逻辑】：更强悍的尾部裁剪
+                // For function isn't related to the editing block, 
+                // trim the function body to reduce redundant info. 
                 if let Some(first_line) = snippet.lines().next() {
-                    // 使用闭包过滤掉尾部所有的 '{', ' ', '\r', '\n'
+                    // trim all  the '{', ' ', '\r', '\n' in the tail.
+                    // TODO: use other method to trim the redundant punctuation not just '{', ' ', '\r', '\n' 
                     let clean_signature = first_line
                         .trim_end_matches(|c| c == '{' || c == ' ' || c == '\r' || c == '\n')
                         .trim()
                         .to_string();
                         
-                    // 加上分号，让它看起来是一个完美的函数声明 (可选，但对 C++/Rust 的 AI 理解有帮助)
+                    // Add a ';' as it may be useful for AI analyzing in C/C++ & rust
                     signatures.push(format!("{};", clean_signature)); 
                 }
             }
         }
     }
 
-    // 递归遍历所有子节点（注意要把 trigger_idx 传下去）
+    // Recursively traverse all the node
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         extract_functions(child, code_bytes, trigger_idx, signatures);
@@ -83,16 +87,13 @@ fn extract_functions(node: Node, code_bytes: &[u8], trigger_idx: Option<usize>, 
 fn main() {
     let input_json: String;
 
-    // ==========================================
-    // 🚀 數據獲取：區分測試環境與生產環境
-    // ==========================================
+    // In debug mode, engine will read the input from file DEBUG_JSON_PATH instead of frontend.
     if IS_DEBUG_MODE {
-        // 測試模式：直接從本地讀取 JSON 檔案
-        println!("🛠️ [測試模式] 正在讀取本地文件: {}", DEBUG_JSON_PATH);
+        println!("[Debug Mode] Reading from local test file: {}", DEBUG_JSON_PATH);
         input_json = fs::read_to_string(DEBUG_JSON_PATH)
-            .unwrap_or_else(|_| panic!("❌ 找不到測試文件 {}，請在 Rust 專案根目錄創建它！", DEBUG_JSON_PATH));
+            .unwrap_or_else(|_| panic!("[Debug Mode] Test file {} not exist!", DEBUG_JSON_PATH));
+    // In production mode, engine will read the input from typescript frontend.
     } else {
-        // 生產模式：從標準輸入讀取 VS Code 傳來的數據
         let mut buffer = String::new();
         if let Err(e) = io::stdin().read_to_string(&mut buffer) {
             eprintln!("Failed to read stdin: {}", e);
@@ -101,7 +102,7 @@ fn main() {
         input_json = buffer;
     }
 
-    // 解析 JSON
+    // Analyze the input json file.
     let input: InputPayload = match serde_json::from_str(&input_json) {
         Ok(data) => data,
         Err(e) => {
@@ -121,25 +122,25 @@ fn main() {
         error: None,
     };
 
-    // 初始化 Tree-sitter Parser
+    // Initialize Tree-sitter Parser
     let mut parser = Parser::new();
 
-    // 根据vscode传来的language_id识别语言名称
+    // Identify the language based on the language_id received from VS Code.
     let language: tree_sitter::Language = match &input.language_id {
-        // 1. 处理我们已经引入 Parser 的语言
+        // Handle languages for which we have already imported a Parser.
         LanguageID::Known(KnownLanguage::C) | LanguageID::Known(KnownLanguage::Cpp) => tree_sitter_cpp::LANGUAGE.into(),
         LanguageID::Known(KnownLanguage::Rust) => tree_sitter_rust::LANGUAGE.into(),
         
-        // 2. 捕获完全未知的字符串
+        // Handle completely unknown strings.
         LanguageID::Unsupported(unknown_lang) => {
             output.error = Some(format!("Unknown language: {}", unknown_lang));
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
             return;
         }
 
-        // 3. 捕获“枚举中定义了，但我们还没引入解析器”的其他已知语言
+        // Catch other known languages defined in the enum but lacking an imported parser.
+        // TODO: consider if the output need to be print in production mode
         LanguageID::Known(known_but_unsupported) => {
-            // 使用 Debug 打印枚举名称
             output.error = Some(format!("Language {:?} Not Support", known_but_unsupported));
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
             return;
@@ -147,38 +148,39 @@ fn main() {
     };
 
     if let Err(e) = parser.set_language(&language) {
-        output.error = Some(format!("加載語言解析器失敗: {}", e));
+        output.error = Some(format!("Failed to load the language parser: {}", e));
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
         return;
     }
 
-    // 解析源碼生成 AST
+    // Analyze the source code to create Ast tree.
     let code_bytes = input.file_content.as_bytes();
 
     let trigger_idx = input.file_content.find("//>");
     if let Some(tree) = parser.parse(code_bytes, None) {
-        // 传入 trigger_idx
+        // analyze the root node.
         extract_functions(tree.root_node(), code_bytes, trigger_idx, &mut output.context_skeleton);
         
-        // 🛡️ 容错降级机制 (Fallback)
+        // Fault tolerance fallback mechanism, if nothing can be analyzed from the code
+        // use the original code instead.
         if output.context_skeleton.is_empty() {
             let fallback_snippet = input.file_content.lines().take(50).collect::<Vec<_>>().join("\n");
-            output.context_skeleton.push(format!("// [代码包含严重语法错误或无函数结构，采用原始代码 Fallback]\n{}", fallback_snippet));
+            output.context_skeleton.push(format!("// [Code contains severe syntax errors or lacks function structure, falling back to raw code]\n{}", fallback_snippet));
         }
         
     } else {
-        // Tree-sitter 徹底宕機的極限情況
+        // Extreme case where Tree-sitter completely crashes or fails to parse.
         let fallback_snippet = input.file_content.lines().take(50).collect::<Vec<_>>().join("\n");
-        output.context_skeleton.push(format!("// [AST 解析徹底失敗，採用原始代碼 Fallback]\n{}", fallback_snippet));
+        output.context_skeleton.push(format!("// [AST parsing completely failed, falling back to raw code]\n{}", fallback_snippet));
     }
 
-    // 輸出最終結果
+    // Output the final result.
     if IS_DEBUG_MODE {
-        // 測試模式下，為了方便肉眼看，我們打印格式化後的 JSON (to_string_pretty)
+        // In debug mode, print formatted JSON for readability.
         println!("\nAnalyze result:");
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
-        // 生產模式下，壓縮成一行打印給 Node.js 讀取
+        // In production mode, print as a single compact line for Node.js to read.
         println!("{}", serde_json::to_string(&output).unwrap());
     }
 }

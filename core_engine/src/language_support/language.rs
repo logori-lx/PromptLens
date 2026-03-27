@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(untagged)]
 pub(crate) enum LanguageID {
-    // 优先尝试匹配已知语言
+    // Attempt to match known languages first.
     Known(KnownLanguage),
-    // 如果匹配失败，作为字符串存入这里
+    // If matching fails, store the unsupported language ID as a string here.
     Unsupported(String),
 }
 
