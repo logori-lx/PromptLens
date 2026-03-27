@@ -2,20 +2,19 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Read};
 use tree_sitter::{Node, Parser};
-
-// ==========================================
-// 🛠️ 開發與測試配置
-// ==========================================
-// 將此開關設為 true 時，程序會直接讀取本地的 test_input.json 進行解析測試
+mod language_support;
+use language_support::language::LanguageID;
+use language_support::language::KnownLanguage;
 const IS_DEBUG_MODE: bool = true;
 const DEBUG_JSON_PATH: &str = "test_input.json";
 
 // 1. 定義從 Node.js (或本地測試文件) 接收的輸入結構
+// 1. 定義從 Node.js 接收的輸入結構
 #[derive(Deserialize, Debug)]
 struct InputPayload {
     user_prompt: String,
     file_content: String,
-    file_extension: String,
+    language_id: LanguageID, 
 }
 
 // 2. 定義發還給前端的輸出結構
@@ -125,12 +124,23 @@ fn main() {
     // 初始化 Tree-sitter Parser
     let mut parser = Parser::new();
 
-    // 根據前端傳來的後綴名，動態加載對應的語言引擎
-    let language: tree_sitter::Language = match input.file_extension.as_str() {
-        "cpp" | "c" | "h" | "hpp" => tree_sitter_cpp::LANGUAGE.into(),
-        "rs" => tree_sitter_rust::LANGUAGE.into(),
-        ext => {
-            output.error = Some(format!("目前尚未配置对 .{} 文件的解析支持", ext));
+    // 根据vscode传来的language_id识别语言名称
+    let language: tree_sitter::Language = match &input.language_id {
+        // 1. 处理我们已经引入 Parser 的语言
+        LanguageID::Known(KnownLanguage::C) | LanguageID::Known(KnownLanguage::Cpp) => tree_sitter_cpp::LANGUAGE.into(),
+        LanguageID::Known(KnownLanguage::Rust) => tree_sitter_rust::LANGUAGE.into(),
+        
+        // 2. 捕获完全未知的字符串
+        LanguageID::Unsupported(unknown_lang) => {
+            output.error = Some(format!("Unknown language: {}", unknown_lang));
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            return;
+        }
+
+        // 3. 捕获“枚举中定义了，但我们还没引入解析器”的其他已知语言
+        LanguageID::Known(known_but_unsupported) => {
+            // 使用 Debug 打印枚举名称
+            output.error = Some(format!("Language {:?} Not Support", known_but_unsupported));
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
             return;
         }

@@ -64,10 +64,13 @@ export function activate(context: vscode.ExtensionContext) {
                     // print the code that frontend get.
                     if(isDev){
                         const fullCode = document.getText(); // 获取当前文件的所有代码
+
+                        const currentLanguage = document.languageId; //获取当前文件的语言名称
                         
                         const inputPayload = {
                             user_prompt: promptText,
-                            file_content: fullCode
+                            file_content: fullCode,
+                            language_id: currentLanguage 
                         };
                         // 将对象转为格式化的 JSON 字符串（缩进2个空格，方便阅读）
                         const jsonString = JSON.stringify(inputPayload, null, 2);
@@ -76,9 +79,6 @@ export function activate(context: vscode.ExtensionContext) {
                         console.log("📦 准备传给 Rust 的 JSON 数据如下:\n", jsonString);
                     }
                    
-                    // ==========================================
-                    // 🌟 新增 (修改部分结束)
-                    // ==========================================
 
                     try {
                         // ==========================================
