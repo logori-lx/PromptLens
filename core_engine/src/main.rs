@@ -5,7 +5,6 @@ use tree_sitter::{Node, Parser};
 mod language_support;
 use language_support::language::LanguageID;
 use language_support::language::KnownLanguage;
-const IS_DEBUG_MODE: bool = true;
 const DEBUG_JSON_PATH: &str = "test_input.json";
 const ACTIVE_NODE_THRESHOLD: usize =  150;
 
@@ -24,6 +23,8 @@ struct OutputPayload {
     context_skeleton: Vec<String>,
     error: Option<String>,
 }
+
+
 
 // Recursively traverse the AST, extract the skeletons or error fragments of function.
 // TODO: consider if the extract_functions need to be exposed to public as input variable signatures is useless for user.
@@ -88,8 +89,9 @@ fn main() {
     let input_json: String;
 
     // In debug mode, engine will read the input from file DEBUG_JSON_PATH instead of frontend.
-    if IS_DEBUG_MODE {
-        println!("[Debug Mode] Reading from local test file: {}", DEBUG_JSON_PATH);
+    if cfg!(debug_assertions) {
+        // To prevent debug log being treated as valid input by frontend, print debug msg to stderr
+        eprintln!("[Debug Mode] Reading from local test file: {}", DEBUG_JSON_PATH);
         input_json = fs::read_to_string(DEBUG_JSON_PATH)
             .unwrap_or_else(|_| panic!("[Debug Mode] Test file {} not exist!", DEBUG_JSON_PATH));
     // In production mode, engine will read the input from typescript frontend.
@@ -175,7 +177,7 @@ fn main() {
     }
 
     // Output the final result.
-    if IS_DEBUG_MODE {
+    if cfg!(debug_assertions) {
         // In debug mode, print formatted JSON for readability.
         println!("\nAnalyze result:");
         println!("{}", serde_json::to_string_pretty(&output).unwrap());

@@ -1,19 +1,36 @@
 import * as vscode from 'vscode';
+import { spawn } from 'child_process'; 
+import * as path from 'path';         
 
-// for test, if env development is set, redudant debug log will be printed
+// For test, if env development is set, redundant debug log will be printed
 const isDev = process.env.NODE_ENV === 'development';
 const TRIGGER_MARK = '//>';
-const DEBOUNCE_DELAY = 800; // 0.8秒防抖
+const DEBOUNCE_DELAY = 800; // 0.8s debounce
+const PROMTLENS_ENGINE = "promptlens_engine";
 
 const loadingDecorationType = vscode.window.createTextEditorDecorationType({
     after: {
-        contentText: ' ⏳ 正在呼叫 AI 引擎生成代碼...',
-        // 使用跟 Ghost Text 一样的幽灵灰色
+        contentText: ' Calling AI engine to generate code...',
+        // Use the same ghost gray color as Ghost Text
         color: new vscode.ThemeColor('editorGhostText.foreground'), 
         fontStyle: 'italic'
     }
 });
-// 🛠️ 辅助函数：结合 CancellationToken 实现完美的防抖
+
+// The data structure which will be passed to rust core engine 
+interface AIPayload {
+    user_prompt: string;
+    file_content: string;
+    language_id: string;
+}
+// The data structure which will be returned by core engine
+interface RustEngineOutput {
+    user_prompt: string;
+    context_skeleton: string[];
+    error: string | null;
+}
+
+// Helper function: Achieves perfect debouncing combined with CancellationToken
 const delay = (ms: number, token: vscode.CancellationToken) => {
     return new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -24,7 +41,7 @@ const delay = (ms: number, token: vscode.CancellationToken) => {
             }
         }, ms);
 
-        // 如果在等待期间，VS Code 报告请求已取消（用户又敲了键盘）
+        // If VS Code reports the request is cancelled during the wait (user typed again)
         token.onCancellationRequested(() => {
             clearTimeout(timer);
             reject(new Error('Cancelled'));
@@ -33,9 +50,9 @@ const delay = (ms: number, token: vscode.CancellationToken) => {
 };
 
 export function activate(context: vscode.ExtensionContext) {
-    console.log('🔧 PromptLens 扩展已激活！使用官方 Ghost Text 架构');
+    console.log('PromptLens extension activated! Using official Ghost Text architecture');
 
-    // 1. 快捷鍵插入標記功能
+    // 1. Shortcut command to insert trigger mark
     let insertMarkCmd = vscode.commands.registerCommand('promptlens.insertPromptMark', () => {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
@@ -46,10 +63,10 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    // 2. 核心功能：注册 Ghost Text 提供者 (在这里处理防抖和AI请求)
+    // Core feature: Register Ghost Text provider (handles debouncing and AI requests here)
     const provider: vscode.InlineCompletionItemProvider = {
-        // VS Code 会在用户每次敲击键盘时自动调用这个函数，并传入一个 CancellationToken
-        async provideInlineCompletionItems(document, position, context, token) {
+        // Step 1: VS Code automatically calls this function on every keystroke, passing a CancellationToken
+        async provideInlineCompletionItems(document, position, _context, token) {
             
             const lineText = document.lineAt(position.line).text;
             const textBeforeCursor = lineText.substring(0, position.character);
@@ -61,65 +78,48 @@ export function activate(context: vscode.ExtensionContext) {
                 if (promptText.length > 0) {
                     const editor = vscode.window.activeTextEditor;
                     if (!editor) return [];
-                    // print the code that frontend get.
-                    if(isDev){
-                        const fullCode = document.getText(); // 获取当前文件的所有代码
 
-                        const currentLanguage = document.languageId; //获取当前文件的语言名称
-                        
-                        const inputPayload = {
+                    try {
+
+                        // Debounce mechanism, wait for DEBOUNCE_DELAY millseconds before get user's prompt
+                        await delay(DEBOUNCE_DELAY, token);
+                        const fullCode = document.getText(); // Get all code in the current file
+                        const currentLanguage = document.languageId; // Get the language ID of the current file
+                        const inputPayload: AIPayload = {
                             user_prompt: promptText,
                             file_content: fullCode,
                             language_id: currentLanguage 
                         };
-                        // 将对象转为格式化的 JSON 字符串（缩进2个空格，方便阅读）
-                        const jsonString = JSON.stringify(inputPayload, null, 2);
-                        
-                        // 打印到调试控制台
-                        console.log("📦 准备传给 Rust 的 JSON 数据如下:\n", jsonString);
-                    }
-                   
 
-                    try {
-                        // ==========================================
-                        // ⏱️ 1. 防抖机制
-                        // ==========================================
-                        await delay(DEBOUNCE_DELAY, token);
-
-                        // ==========================================
-                        // ⚡ 2. 用户停止输入 0.8 秒后，触发游标处的 Loading 动画
-                        // ==========================================
+                        // Trigger loading animation at cursor after user stops typing for 0.8 seconds
                         const decorationRange = new vscode.Range(position, position);
                         editor.setDecorations(loadingDecorationType, [decorationRange]);
 
-                        // ==========================================
-                        // ⏳ 3. 显示状态栏动画，并请求 AI
-                        // ==========================================
+
+                        // Show status bar animation and request AI
                         const items = await vscode.window.withProgress({
                             location: vscode.ProgressLocation.Window,
-                            title: `🤖 PromptLens: 正在生成代码...`,
+                            title: `PromptLens: Generating code...`,
                         }, async (progress) => {
                             
                             let aiResponse: string;
                             if (isDev){
-                                aiResponse = await callMockAI(promptText, token);
+                                aiResponse = await callMockAI(inputPayload, token, context);
                             }else{
-                                aiResponse = await callAI(promptText, token);
+                                aiResponse = await callAI(inputPayload, token, context);
                             }
 
-                            // ==========================================
-                            // 🧹 4. AI 响应回来后，立刻清除游标处的 Loading 装饰
-                            // ==========================================
+    
+                            // 4. Clear loading decoration at cursor immediately after AI responds
                             editor.setDecorations(loadingDecorationType, []);
 
-                            // 如果在 AI 网络请求期间，用户又打字了，直接丢弃结果
+                            // Discard the result if the user types again during the AI network request
                             if (token.isCancellationRequested) {
                                 return [];
                             }
 
-                            // ==========================================
-                            // ✨ 5. 返回 InlineCompletionItem (真正的 Ghost Text)
-                            // ==========================================
+    
+                            // 5. Return InlineCompletionItem (The actual Ghost Text)
                             const item = new vscode.InlineCompletionItem(
                                 aiResponse,
                                 new vscode.Range(position, position)
@@ -131,9 +131,8 @@ export function activate(context: vscode.ExtensionContext) {
                         return items;
 
                     } catch (e) {
-                        // ==========================================
-                        // 🧹 如果防抖被取消（用户又打字了），也要记得清理 Loading 装饰
-                        // ==========================================
+
+                        // Remember to clear the loading decoration if debouncing is cancelled (user typed again)
                         if (editor) editor.setDecorations(loadingDecorationType, []);
                         return [];
                     }
@@ -143,7 +142,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
     };
 
-    // 注册提供者
+    // Register the provider
     let inlineProvider = vscode.languages.registerInlineCompletionItemProvider(
         { pattern: '**' }, 
         provider
@@ -151,11 +150,86 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(insertMarkCmd, inlineProvider);
 }
-// For test, mock ai behaviour.
-async function callMockAI(prompt: string, token: vscode.CancellationToken): Promise<string> {
-    console.log(`🔧 调用 AI，提示: "${prompt}"`);
+// the extension will create a child process to run rust core engine
+async function runRustEngine(payload: AIPayload, context: vscode.ExtensionContext, token: vscode.CancellationToken): Promise<RustEngineOutput> {
+    return new Promise((resolve, reject) => {
+        // the rust engine executable file need to be placed in 
+        // Windows: ${extensionPath}/bin/promptlens-engine.exe
+        // Linux:   ${extensionPath}/bin/promptlens-engine
+        const isWindows = process.platform === 'win32';
+        const engineExecutable = isWindows ? `${PROMTLENS_ENGINE}.exe` : PROMTLENS_ENGINE;;
+        const enginePath = path.join(context.extensionPath, 'bin', engineExecutable);
+
+        const child = spawn(enginePath);
+        
+        let stdoutData = '';
+        let stderrData = '';
+        // to catch the error generated by file not existed or user doesn't have execution access for the file
+        child.on('error', (err) => {
+            reject(new Error(`Failed to start Rust engine: ${err.message}`));
+        });
+
+        child.stdout.on('data', (data) => { stdoutData += data.toString(); });
+        child.stderr.on('data', (data) => { stderrData += data.toString(); });
+
+        child.on('close', (code) => {
+            if (token.isCancellationRequested) {
+                reject(new Error('Cancelled'));
+                return;
+            }
+
+            if (code !== 0) {
+                console.error(`Rust engine error: ${stderrData}`);
+                reject(new Error(`Rust Engine Exited with code ${code}`));
+            } else {
+                try {
+                    const result = JSON.parse(stdoutData) as RustEngineOutput;
+                    resolve(result);
+                } catch (e) {
+                    reject(new Error("Invalid JSON from Rust Engine"));
+                }
+            }
+        });
+
+        
+
+        // 用户继续打字时，终止无用的 Rust 解析进程
+        token.onCancellationRequested(() => {
+            child.kill();
+            reject(new Error('Cancelled'));
+        });
+
+        // 将当前文件的 payload 发送给 Rust 的 stdin
+        child.stdin.write(JSON.stringify(payload));
+        child.stdin.end();
+    });
+}
+// Convert object to formatted JSON string (2-space indent for readability)
+
+// For test, mock AI behavior
+async function callMockAI(payload: AIPayload, token: vscode.CancellationToken, context: vscode.ExtensionContext): Promise<string> {
+    // print payload that will be passed to rust engine
+    const payloadJsonString = JSON.stringify(payload, null, 2);
+    console.log("JSON data ready to be passed to Rust:\n", payloadJsonString);
+    console.log("Starting Rust AST Engine...");
+
+    // use rust core engine to analyze AST tree
+    const rustResult = await runRustEngine(payload, context, token);
+    const rustResultJsonString = JSON.stringify(rustResult, null, 2);
+    console.log("JSON data received from Rust:\n", rustResultJsonString);
+
+    if (rustResult.error) {
+        console.error("Rust Engine Error:", rustResult.error);
+    }
+
+    // the output of rustcore engine which will be passed to LLM
+    const aiRequestPayload = {
+        prompt: rustResult.user_prompt,
+        context_skeleton: rustResult.context_skeleton.join('\n')
+    };
+    console.log("Final JSON prepared for LLM API:\n", JSON.stringify(aiRequestPayload, null, 2));
     
-    // 模拟网络延迟（1.5秒）
+    // Simulate network latency (1.5 seconds)
     await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
             if (token.isCancellationRequested) reject(new Error('Cancelled'));
@@ -170,26 +244,49 @@ async function callMockAI(prompt: string, token: vscode.CancellationToken): Prom
     
     if (token.isCancellationRequested) throw new Error('Cancelled');
     
+    const prompt = payload.user_prompt;
     let aiResponse = '';
+    
     if (prompt.toLowerCase().includes('函数') || prompt.toLowerCase().includes('function')) {
-        aiResponse = `\n// AI 根据 "${prompt}" 生成的函数\nfunction aiGeneratedFunction() {\n    console.log("执行成功");\n    return true;\n}`;
+        aiResponse = `\n// AI generated function based on "${prompt}"\nfunction aiGeneratedFunction() {\n    console.log("Execution successful");\n    return true;\n}`;
     } else if (prompt.toLowerCase().includes('类') || prompt.toLowerCase().includes('class')) {
-        aiResponse = `\n// AI 根据 "${prompt}" 生成的类\nclass AIGeneratedClass {\n    constructor() {\n        this.value = "AI 生成";\n    }\n}`;
+        aiResponse = `\n// AI generated class based on "${prompt}"\nclass AIGeneratedClass {\n    constructor() {\n        this.value = "AI Generated";\n    }\n}`;
     } else if (prompt.toLowerCase().includes('循环') || prompt.toLowerCase().includes('loop')) {
-        aiResponse = `\n// AI 根据 "${prompt}" 生成的循环\nfor (let i = 0; i < 10; i++) {\n    console.log(\`迭代次数: \${i}\`);\n}`;
+        aiResponse = `\n// AI generated loop based on "${prompt}"\nfor (let i = 0; i < 10; i++) {\n    console.log(\`Iteration: \${i}\`);\n}`;
     } else {
-        aiResponse = `\n// AI 根据 "${prompt}" 生成的代码\nconst result = "AI 生成的代码块";\nconsole.log(result);`;
+        aiResponse = `\n// AI generated code based on "${prompt}"\nconst result = "AI generated code block";\nconsole.log(result);`;
     }
     
     return aiResponse;
 }
 
-//TBD， enter the prompt & AST tree text and get the aioutput.
-async function callAI(prompt: string, token: vscode.CancellationToken): Promise<string> {
-    
-    let aiResponse = '';
-    
-    return aiResponse;
-}
+// TBD, enter the prompt & AST tree text and get the aioutput.
+async function callAI(payload: AIPayload, token: vscode.CancellationToken, context: vscode.ExtensionContext): Promise<string> {
+    try {
+        console.log("Starting Rust AST Engine...");
+        // use rust core engine to analyze AST tree
+        const rustResult = await runRustEngine(payload, context, token);
 
+        if (rustResult.error) {
+            console.error("Rust Engine Error:", rustResult.error);
+        }
+
+        // the output of rustcore engine which will be passed to LLM
+        const aiRequestPayload = {
+            prompt: rustResult.user_prompt,
+            context_skeleton: rustResult.context_skeleton.join('\n')
+        };
+
+        console.log("Final JSON prepared for LLM API:\n", JSON.stringify(aiRequestPayload, null, 2));
+
+        
+        
+    } catch (error) {
+        if (error instanceof Error && error.message === 'Cancelled') {
+            throw error;
+        }
+        console.error("Error in callAI:", error);
+        return "";
+    }
+}
 export function deactivate() {}

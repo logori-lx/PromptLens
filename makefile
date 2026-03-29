@@ -26,8 +26,9 @@ build: build-core build-ts
 
 build-core:
 	@echo "=> Building Core Engine..."
-	cd $(RUST_DIR) && cargo build
-
+	cd $(RUST_DIR)  && cargo build --release
+	powershell -Command "New-Item -ItemType Directory -Force -Path .\src\bin | Out-Null"
+	powershell -Command "Copy-Item -Path $(RUST_DIR)\target\release\promptlens_engine.exe -Destination .\bin\ -Force"
 build-ts:
 	@echo "=> Compiling TypeScript Extension..."
 	npm run compile

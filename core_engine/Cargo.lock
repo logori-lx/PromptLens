@@ -71,7 +71,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "prompt_core"
+name = "promptlens_engine"
 version = "0.1.0"
 dependencies = [
  "serde",
