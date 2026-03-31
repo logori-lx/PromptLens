@@ -63,6 +63,23 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
+    // register a command to delete the //> ${prompt}
+    // markindex: the index of "//>"
+    // line: the line number of the prompt
+    let cleanupCmd = vscode.commands.registerCommand('promptlens.cleanupPrompt', (line: number, markIndex: number) => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            editor.edit(editBuilder => {
+                // Start of deletion: The beginning of the prompt (the position of '//>')
+                const startPos = new vscode.Position(line, markIndex);
+                // End of deletion: The beginning of the next line (this removes the original prompt along with the '\n' we forcedly added for the preview)
+                const endPos = new vscode.Position(line + 1, 0);
+                
+                editBuilder.delete(new vscode.Range(startPos, endPos));
+            });
+        }
+    });
+
     // Core feature: Register Ghost Text provider (handles debouncing and AI requests here)
     const provider: vscode.InlineCompletionItemProvider = {
         // Step 1: VS Code automatically calls this function on every keystroke, passing a CancellationToken
@@ -118,12 +135,30 @@ export function activate(context: vscode.ExtensionContext) {
                                 return [];
                             }
 
-    
-                            // 5. Return InlineCompletionItem (The actual Ghost Text)
+                            // [Core Magic: Bypassing VS Code's strict prefix validation]
+                            // VS Code natively requires that if a replacement range is specified, the AI-generated 
+                            // code must start with the exact text within that range. Otherwise, it silently drops the Ghost Text.
+                            // Since we force the AI to return pure code starting with a newline (\n), it will 
+                            // never match the preceding `//> prompt` text.
+                            // Solution: Set the Range to a 0-length cursor position (position, position).
+                            // This tells VS Code: "Do not replace any text; simply insert the preview at the cursor."
+                            // This allows the Ghost Text to render successfully. The leftover prompt will be 
+                            // automatically cleaned up when the user presses Tab, triggered by the command attached below.
+                            const replaceRange = new vscode.Range(position, position);
+                            
+                            // Return InlineCompletionItem (The actual Ghost Text)
                             const item = new vscode.InlineCompletionItem(
                                 aiResponse,
-                                new vscode.Range(position, position)
+                                replaceRange
                             );
+
+                            // mount the cleanup command registered before,
+                            // After user press Tab, the cleanup command will be executed to delete the "//> ${prompt}"
+                            item.command = {
+                                title: 'Cleanup Prompt',
+                                command: 'promptlens.cleanupPrompt',
+                                arguments: [position.line, markIndex] // 传入当前行号和提示词起点的索引
+                            };
 
                             return [item];
                         });
@@ -148,8 +183,11 @@ export function activate(context: vscode.ExtensionContext) {
         provider
     );
 
-    context.subscriptions.push(insertMarkCmd, inlineProvider);
+    // to declare that the three command insertMarkCmd, inlineProvider, cleanupCmd is unique cmd to this extension
+    // if the extension has been uninstalled or disabled, this three commands also need to be deleted automatically.
+    context.subscriptions.push(insertMarkCmd, inlineProvider, cleanupCmd);
 }
+
 // the extension will create a child process to run rust core engine
 async function runRustEngine(payload: AIPayload, context: vscode.ExtensionContext, token: vscode.CancellationToken): Promise<RustEngineOutput> {
     return new Promise((resolve, reject) => {
@@ -193,13 +231,13 @@ async function runRustEngine(payload: AIPayload, context: vscode.ExtensionContex
 
         
 
-        // 用户继续打字时，终止无用的 Rust 解析进程
+        // When user continue to type words, stop running useless process.
         token.onCancellationRequested(() => {
             child.kill();
             reject(new Error('Cancelled'));
         });
 
-        // 将当前文件的 payload 发送给 Rust 的 stdin
+        // send the analyzed file payload to the stdin of rust payload. 
         child.stdin.write(JSON.stringify(payload));
         child.stdin.end();
     });
@@ -278,7 +316,91 @@ async function callAI(payload: AIPayload, token: vscode.CancellationToken, conte
         };
 
         console.log("Final JSON prepared for LLM API:\n", JSON.stringify(aiRequestPayload, null, 2));
+        
+        const config = vscode.workspace.getConfiguration('promptlens');
+        const API_KEY = config.get<string>('apiKey');
+        const API_BASE_URL = config.get<string>('baseUrl');
+        const MODEL_NAME = config.get<string>('model');
+        console.log("API_BASE_URL:", API_BASE_URL, "API_KEY", API_KEY, "MODEL_NAME", MODEL_NAME);
+        // To ensure the necessary message for llm existed
+        if (!API_KEY || !API_BASE_URL || !MODEL_NAME) {
+            vscode.window.showErrorMessage("PromptLens: 请先在 VS Code 设置中完善 API Key, Base URL 和 Model Name！");
+            return "";
+        }
+        
 
+        // AbortController is set to cancel the network request when the user typing.
+        const controller = new AbortController();
+        const signal = controller.signal;
+        
+        // When vs code send cancel signal, stop fetch request.
+        token.onCancellationRequested(() => {
+            controller.abort();
+        });
+
+        // Construct request body
+        const requestBody = {
+            model: "deepseek-coder",
+            messages: [
+                {
+                    role: "system",
+                    content: `You are an AI engine specialized in IDE Inline Code Completion (Ghost Text).
+Your task is to strictly generate ONLY the "new code to be inserted at the cursor position" based on the user's prompt.
+
+[STRICT RULES]:
+1. The provided 'Context Skeleton' is ONLY for you to understand the current file's environment (e.g., variables, function signatures). You are ABSOLUTELY FORBIDDEN from including, repeating, or completing any code from the Context Skeleton in your output!
+2. DO NOT include any markdown formatting (e.g., \`\`\`cpp or \`\`\`).
+3. DO NOT include any explanations, greetings, comments, or conversational text.
+4. Your output will be directly inserted into the user's text editor. Ensure you output PURE, raw code only.
+5. CRITICAL: You MUST start your generated response with a newline character (\\n). The code you generate must begin on a new line below the user's prompt.`
+                },
+                {
+                    role: "user",
+                    content: `[Reference Context Skeleton] (For reference ONLY. DO NOT output any of this):
+${aiRequestPayload.context_skeleton}
+
+[User's Prompt] (Generate ONLY the code requested here):
+${aiRequestPayload.prompt}`
+                }
+            ],
+            temperature: 0.1, // Keep the temperature low to ensure more deterministic and consistent code generation.
+            max_tokens: 1024
+        };
+
+        // send request to llm
+        const response = await fetch(API_BASE_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${API_KEY}`
+            },
+            body: JSON.stringify(requestBody),
+            signal: signal as any // bind the cancel signal.
+        });
+
+        if (!response.ok) {
+            throw new Error(`DeepSeek API 請求失敗: ${response.status} ${response.statusText}`);
+        }
+        
+        const data = await response.json() as any;
+        console.log("The response of LLM API:\n", JSON.stringify(data, null, 2));
+        // analyze the code returned by llm.
+        if (data.choices && data.choices.length > 0) {
+            // Use .trim() to ensure all leading and trailing whitespaces are completely removed
+            let generatedCode = data.choices[0].message.content.trim();
+            
+            // Fault tolerance: Some LLMs stubbornly include markdown tags (e.g., ```cpp ... ```) even when warned not to.
+            // Apply a simple regex filter here to ensure the Ghost Text renders cleanly.
+            generatedCode = generatedCode.replace(/^```[a-z]*\n/gi, '').replace(/\n```$/g, '');
+            // if generated code doesn't start with a \n
+            // add it manually
+            if (!generatedCode.startsWith('\n')) {
+                generatedCode = '\n' + generatedCode;
+            }
+            return generatedCode;
+        }
+
+        return "";
         
         
     } catch (error) {
@@ -290,3 +412,4 @@ async function callAI(payload: AIPayload, token: vscode.CancellationToken, conte
     }
 }
 export function deactivate() {}
+

@@ -27,7 +27,10 @@ core_engine/target/
 .git_guard/
 
 #rust core engine 用于存储编译出来的exe文件
-bin 
+bin
+
+# 用于测试插件的目录
+test_workspace
 
 # =========================
 # OS & Editor
